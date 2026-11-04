@@ -9,7 +9,12 @@ import org.springframework.web.reactive.function.client.WebClient;
 public class WebClientConfig {
 
     @Bean
-    public WebClient localMetalCLient(WebClient.Builder builder,
+    public WebClient.Builder webClientBuilder(){
+        return WebClient.builder();
+    }
+
+    @Bean
+    public WebClient localMetalClient(WebClient.Builder builder,
                                       @Value("${gateway.nodes.local-url") String localUrl
                                       ) {
         return builder.baseUrl(localUrl).build();

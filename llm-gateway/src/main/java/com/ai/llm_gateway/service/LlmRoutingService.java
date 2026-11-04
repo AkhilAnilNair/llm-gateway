@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
+@Service
 public class LlmRoutingService {
     private final WebClient localMetalClient;
     private final WebClient cloudGroqClient;
