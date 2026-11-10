@@ -37,8 +37,8 @@ public class LlmRoutingService {
 
         boolean isStrongTier = "strong".equalsIgnoreCase(tier);
         WebClient client = isStrongTier ? cloudGroqClient : localMetalClient;
-        String targetModel = isStrongTier ? "llama-3.3-70b-versatile" : "qwen2.5:3b";
-        String nodeLabel = isStrongTier ? "cloud-groq-70b" : "local-m2-3b";
+        String targetModel = isStrongTier ? "openai/gpt-oss-20b" : "qwen2.5:1.5b";
+        String nodeLabel = isStrongTier ? "cloud-groq-70b" : "local-m2-1.5b";
 
         return client.post()
                 .uri("/chat/completions")
