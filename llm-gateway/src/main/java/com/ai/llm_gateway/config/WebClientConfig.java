@@ -22,7 +22,7 @@ public class WebClientConfig {
 
     @Bean
     public WebClient localMetalClient(WebClient.Builder builder,
-                                      @Value("${gateway.nodes.local-url") String localUrl
+                                      @Value("${gateway.nodes.local-url}") String localUrl
                                       ) {
         return builder.clone().baseUrl(localUrl.trim()).build();
     }
