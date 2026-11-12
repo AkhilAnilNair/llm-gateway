@@ -20,8 +20,9 @@ public class GatewayController {
     @PostMapping(value = "/completions", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> completions(
             @RequestBody ChatCompletionRequest request,
-            @RequestHeader(value = "X-Route-Tier", defaultValue = "weak") String routeTier) {
-        return routingService.routeAndStream(request, routeTier);
+            @RequestHeader(value = "X-Route-Tier", defaultValue = "weak") String routeTier,
+            @RequestHeader(value = "X-Cache-Threshold", required = false) Double cacheThreshold) {
+        return routingService.routeAndStream(request, routeTier, cacheThreshold);
     }
 
 }
