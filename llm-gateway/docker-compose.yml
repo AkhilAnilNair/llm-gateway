@@ -1,4 +1,15 @@
 services:
+  redis-stack:
+    image: redis/redis-stack-server:7.4.0-v0
+    container_name: gateway-redis-vector
+    ports:
+      - "6379:6379"
+    environment:
+      - REDIS_ARGS=--maxmemory 128mb --maxmemory-policy allkeys-lru --save ""
+    deploy:
+      resources:
+        limits:
+          memory: 256M
   prometheus:
     image: prom/prometheus:v2.54.1
     container_name: gateway-prometheus
