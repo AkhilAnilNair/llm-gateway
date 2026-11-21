@@ -39,7 +39,7 @@ public class LlmRoutingService {
         this.meterRegistry = meterRegistry;
     }
 
-    public Flux<ServerSentEvent<String>> routeAndStream(ChatCompletionRequest request, String tier, Double customThreshold) {
+    public Flux<ServerSentEvent<String>> routeAndStream(ChatCompletionRequest request, String tier, Double customThreshold, boolean allowCacheWrite) {
         long requestStartNs = System.nanoTime();
 
         String userPrompt = extractLatestUserPrompt(request);
@@ -63,7 +63,7 @@ public class LlmRoutingService {
                     }
 
                     // 2. CACHE MISS: Route to Downstream LLM & Asynchronously Populate Cache
-                    return streamFromDownstreamLlm(request, tier, requestStartNs, userPrompt, cacheResult.embedding());
+                    return streamFromDownstreamLlm(request, tier, requestStartNs, userPrompt, cacheResult.embedding(), allowCacheWrite);
                 });
     }
 
@@ -72,7 +72,8 @@ public class LlmRoutingService {
             String tier,
             long requestStartNs,
             String userPrompt,
-            float[] promptEmbedding) {
+            float[] promptEmbedding,
+            boolean allowCacheWrite) {
 
         AtomicLong firstTokenTimeNs = new AtomicLong(0);
         AtomicBoolean firstTokenSeen = new AtomicBoolean(false);
@@ -123,10 +124,15 @@ public class LlmRoutingService {
 
                     // Save assembled response + vector to Redis in background thread
                     String assembledText = fullResponseBuffer.toString();
-                    if (!assembledText.isBlank()) {
+                    System.out.println("DEBUG CACHE STORE -> allowCacheWrite=" + allowCacheWrite
+                            + " | textLen=" + assembledText.length());
+                    if (allowCacheWrite && !assembledText.isBlank()) {
                         Mono.fromRunnable(() -> semanticCacheService.store(userPrompt, promptEmbedding, assembledText))
                                 .subscribeOn(Schedulers.boundedElastic())
-                                .subscribe();
+                                .subscribe(
+                                        null,
+                                        err -> System.err.println("REDIS STORE FAILED: " + err.getMessage())
+                                );
                     }
                 });
     }

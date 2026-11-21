@@ -35,11 +35,12 @@ ADVERSARIAL_PROBES = [
     ("Explain how the TCP protocol works in networking.", "Explain how the UDP protocol works in networking.")
 ]
 
-async def send_request(session, prompt, tier="weak", threshold=0.90, semaphore=None):
+async def send_request(session, prompt, tier="weak", threshold=0.90, semaphore=None, allow_write=True):
     headers = {
         "Content-Type": "application/json",
         "X-Route-Tier": tier,
-        "X-Cache-Threshold": str(threshold)
+        "X-Cache-Threshold": str(threshold),
+        "X-Cache-Write": "true" if allow_write else "false"
     }
     payload = {
         "model": "auto",
@@ -110,12 +111,12 @@ async def run_experiment_2():
         for theta in [0.75, 0.85, 0.90, 0.96]:
             tp_hits = 0
             for p in paraphrases:
-                _, _, hit = await send_request(session, p, "weak", theta, sem)
+                _, _, hit = await send_request(session, p, "weak", theta, sem, allow_write=False)
                 if hit: tp_hits += 1
 
             fp_hits = 0
             for adv in adversarials:
-                _, _, hit = await send_request(session, adv, "weak", theta, sem)
+                _, _, hit = await send_request(session, adv, "weak", theta, sem, allow_write=False)
                 if hit: fp_hits += 1
 
             print(f"{theta:<15.2f} | {(tp_hits/len(paraphrases))*100:<23.1f}% | {(fp_hits/len(adversarials))*100:<24.1f}%")

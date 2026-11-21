@@ -21,8 +21,9 @@ public class GatewayController {
     public Flux<ServerSentEvent<String>> completions(
             @RequestBody ChatCompletionRequest request,
             @RequestHeader(value = "X-Route-Tier", defaultValue = "weak") String routeTier,
-            @RequestHeader(value = "X-Cache-Threshold", required = false) Double cacheThreshold) {
-        return routingService.routeAndStream(request, routeTier, cacheThreshold);
+            @RequestHeader(value = "X-Cache-Threshold", required = false) Double cacheThreshold,
+            @RequestHeader(value = "X-Cache-Write", defaultValue = "true") boolean allowCacheWrite) {
+        return routingService.routeAndStream(request, routeTier, cacheThreshold, allowCacheWrite);
     }
 
 }
