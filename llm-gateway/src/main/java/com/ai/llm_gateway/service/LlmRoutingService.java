@@ -27,21 +27,31 @@ public class LlmRoutingService {
     private final SemanticCacheService semanticCacheService;
     private final MeterRegistry meterRegistry;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final ComplexityRouterService complexityRouterService;
+    private final AtomicInteger inflightLocalRequests;
+    private final int maxLocalParallel;
+    private final double complexityThreshold;
 
     public LlmRoutingService(
             @Qualifier("localMetalClient") WebClient localMetalClient,
             @Qualifier("cloudGroqClient") WebClient cloudGroqClient,
             SemanticCacheService semanticCacheService,
-            MeterRegistry meterRegistry) {
+            MeterRegistry meterRegistry,
+            ComplexityRouterService complexityRouterService) {
         this.localMetalClient = localMetalClient;
         this.cloudGroqClient = cloudGroqClient;
         this.semanticCacheService = semanticCacheService;
         this.meterRegistry = meterRegistry;
+        this.complexityRouterService = complexityRouterService;
+        this.inflightLocalRequests = new AtomicInteger(0);
+        this.maxLocalParallel = 2;
+        this.complexityThreshold = 0.50;
+        meterRegistry.gauge("llm.gateway.local.inflight", inflightLocalRequests);
     }
 
-    public Flux<ServerSentEvent<String>> routeAndStream(ChatCompletionRequest request, String tier, Double customThreshold, boolean allowCacheWrite) {
+    public Flux<ServerSentEvent<String>> routeAndStream(
+            ChatCompletionRequest request, String tier, Double customThreshold, boolean allowCacheWrite) {
         long requestStartNs = System.nanoTime();
-
         String userPrompt = extractLatestUserPrompt(request);
 
         return Mono.fromCallable(() -> semanticCacheService.lookup(userPrompt, customThreshold))
@@ -62,14 +72,76 @@ public class LlmRoutingService {
                         );
                     }
 
-                    // 2. CACHE MISS: Route to Downstream LLM & Asynchronously Populate Cache
-                    return streamFromDownstreamLlm(request, tier, requestStartNs, userPrompt, cacheResult.embedding(), allowCacheWrite);
+                    // 2. CACHE MISS: Run Tier-2 Complexity Router & Tier-3 Queue Overflow
+                    return decideAndRoute(request, tier, requestStartNs, userPrompt, cacheResult.embedding(), allowCacheWrite);
                 });
+    }
+
+    private Flux<ServerSentEvent<String>> decideAndRoute(
+            ChatCompletionRequest request,
+            String requestedTier,
+            long requestStartNs,
+            String userPrompt,
+            float[] promptEmbedding,
+            boolean allowCacheWrite) {
+
+        boolean useStrongNode;
+        String routingReason;
+
+        if ("strong".equalsIgnoreCase(requestedTier)) {
+            useStrongNode = true;
+            routingReason = "manual_strong";
+        } else if ("weak".equalsIgnoreCase(requestedTier)) {
+            useStrongNode = false;
+            routingReason = "manual_weak";
+        } else {
+            // AUTO MODE: Tier-2 Complexity Scoring (< 1 ms)
+            double complexity = complexityRouterService.scoreComplexity(promptEmbedding);
+            meterRegistry.summary("llm.gateway.complexity.score").record(complexity);
+
+            if (complexity >= complexityThreshold) {
+                useStrongNode = true;
+                routingReason = "complexity_hard";
+            } else {
+                useStrongNode = false;
+                routingReason = "complexity_simple";
+            }
+        }
+
+        // TIER-3: Queue-Aware Speculative Overflow
+        boolean acquiredLocalSlot = false;
+        if (!useStrongNode) {
+            int current = inflightLocalRequests.getAndUpdate(v -> v < maxLocalParallel ? v + 1 : v);
+            if (current < maxLocalParallel) {
+                acquiredLocalSlot = true;
+            } else {
+                // Local GPU is saturated (2/2 slots full) -> Overflow to Cloud!
+                useStrongNode = true;
+                routingReason = "queue_overflow";
+            }
+        }
+
+        meterRegistry.counter("llm.gateway.routing.decisions", "reason", routingReason).increment();
+
+        final boolean releaseSlotOnFinish = acquiredLocalSlot;
+        Flux<ServerSentEvent<String>> primaryStream = streamFromDownstreamLlm(
+                request, useStrongNode, requestStartNs, userPrompt, promptEmbedding, allowCacheWrite);
+
+        if (releaseSlotOnFinish) {
+            return primaryStream
+                    .doFinally(signal -> inflightLocalRequests.decrementAndGet())
+                    .onErrorResume(err -> {
+                        meterRegistry.counter("llm.gateway.routing.decisions", "reason", "error_fallback").increment();
+                        return streamFromDownstreamLlm(
+                                request, true, requestStartNs, userPrompt, promptEmbedding, allowCacheWrite);
+                    });
+        }
+        return primaryStream;
     }
 
     private Flux<ServerSentEvent<String>> streamFromDownstreamLlm(
             ChatCompletionRequest request,
-            String tier,
+            boolean isStrongTier,
             long requestStartNs,
             String userPrompt,
             float[] promptEmbedding,
@@ -80,7 +152,6 @@ public class LlmRoutingService {
         AtomicInteger tokenChunks = new AtomicInteger(0);
         StringBuilder fullResponseBuffer = new StringBuilder();
 
-        boolean isStrongTier = "strong".equalsIgnoreCase(tier);
         WebClient client = isStrongTier ? cloudGroqClient : localMetalClient;
         String targetModel = isStrongTier ? "openai/gpt-oss-20b" : "qwen2.5:1.5b";
         String nodeLabel = isStrongTier ? "cloud-groq-70b" : "local-m2-1.5b";
@@ -124,8 +195,6 @@ public class LlmRoutingService {
 
                     // Save assembled response + vector to Redis in background thread
                     String assembledText = fullResponseBuffer.toString();
-                    System.out.println("DEBUG CACHE STORE -> allowCacheWrite=" + allowCacheWrite
-                            + " | textLen=" + assembledText.length());
                     if (allowCacheWrite && !assembledText.isBlank()) {
                         Mono.fromRunnable(() -> semanticCacheService.store(userPrompt, promptEmbedding, assembledText))
                                 .subscribeOn(Schedulers.boundedElastic())
@@ -136,6 +205,7 @@ public class LlmRoutingService {
                     }
                 });
     }
+
     private String extractLatestUserPrompt(ChatCompletionRequest request) {
         if (request.messages() == null || request.messages().isEmpty()) return "";
         return request.messages().get(request.messages().size() - 1).content();
@@ -153,6 +223,7 @@ public class LlmRoutingService {
             }
         } catch (Exception ignored) {}
     }
+
     private String formatAsOpenAiChunk(String cachedContent, double similarity) {
         try {
             Map<String, Object> payload = Map.of(
@@ -172,4 +243,3 @@ public class LlmRoutingService {
         }
     }
 }
-
